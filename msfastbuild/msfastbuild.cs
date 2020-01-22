@@ -66,6 +66,8 @@ namespace msfastbuild
 	{
 		static public string PlatformToolsetVersion = "140";
 		static public string VCBasePath = "";
+        static public string VCBinPath = "";
+        static public string VCRedistPath = "";
 		static public string BFFOutputFilePath = "fbuild.bff";
 		static public Options CommandLineOptions = new Options();
 		static public string WindowsSDKTarget = "10.0.10240.0";
@@ -152,7 +154,7 @@ namespace msfastbuild
 				EvaluateProjectReferences(ProjectsToBuild[i], EvaluatedProjects, null);
 			}
 
-			int ProjectsBuilt = 0;
+            int ProjectsBuilt = 0;
 			foreach(MSFBProject project in EvaluatedProjects)
 			{
 				CurrentProject = project;
@@ -274,10 +276,15 @@ namespace msfastbuild
 		{
 			string projectDir = Path.GetDirectoryName(ProjectPath) + "\\";
 
-			string BatchFileText = "@echo off\n"
+            string vcvarsall = "vcvarsall.bat\" ";
+            if (!File.Exists(VCBasePath + "vcvarsall.bat"))
+            {
+                vcvarsall = "Auxiliary\\Build\\vcvarsall.bat\" ";
+            }
+            string BatchFileText = ""/*"@echo off\n"*/
 				+ "%comspec% /c \"\"" + VCBasePath
-				+ "vcvarsall.bat\" " + (Platform == "Win32" ? "x86" : "x64") + " " 
-				+ (PlatformToolsetVersion == "140" ? WindowsSDKTarget : "") // Only VS2015R3 specifies the WinSDK?
+				+ vcvarsall + (Platform == "Win32" ? "x86" : "x64") + " " 
+				+ (PlatformToolsetVersion == "140" ? /*WindowsSDKTarget*/"" : "") // Only VS2015R3 specifies the WinSDK?
 				+ " && \"" + CommandLineOptions.FBPath  +"\" %*\"";
 			File.WriteAllText(projectDir + "fb.bat", BatchFileText);
 
@@ -408,13 +415,68 @@ namespace msfastbuild
 
 			StringBuilder OutputString = new StringBuilder(MD5hash + "\n\n");
 
-			OutputString.AppendFormat(".VSBasePath = '{0}'\n", ActiveProject.GetProperty("VSInstallDir").EvaluatedValue);
-			VCBasePath = ActiveProject.GetProperty("VCInstallDir").EvaluatedValue;
-			OutputString.AppendFormat(".VCBasePath = '{0}'\n", VCBasePath);
+            VCBasePath = ActiveProject.GetProperty("VCInstallDir").EvaluatedValue;
+            VCBinPath = VCBasePath + (Platform == "Win32" ? "bin\\" : "bin\\amd64\\");
+            VCRedistPath = VCBasePath + "redist/" + (Platform == "Win32" ? "x86" : "x64") + "/Microsoft.VC" + PlatformToolsetVersion + ".CRT/";
+            if (!Directory.Exists(VCBinPath))
+            {
+                string tempPath = VCBasePath + "Tools\\MSVC\\";
+                if (Directory.Exists(tempPath))
+                {
+                    DirectoryInfo tempDir = new DirectoryInfo(tempPath);
+                    var dirs = tempDir.GetDirectories();
+                    if (dirs.Length > 0)
+                    {
+                        tempPath += dirs[0].Name + "\\bin\\Hostx86\\";
+                        tempPath += (Platform == "Win32" ? "x86\\" : "x64\\");
+                        if (Directory.Exists(tempPath))
+                            VCBinPath = tempPath;
+                    }
+                }
+            }
+            if (!Directory.Exists(VCRedistPath))
+            {
+                string tempPath = VCBasePath + "Redist\\MSVC\\";
+                if (Directory.Exists(tempPath))
+                {
+                    DirectoryInfo tempDir = new DirectoryInfo(tempPath);
+                    var dirs = tempDir.GetDirectories();
+                    if (dirs.Length > 0)
+                    {
+                        tempPath += dirs[0].Name + "\\x86\\" + "Microsoft.VC" + PlatformToolsetVersion + ".CRT\\";
+                        if (Directory.Exists(tempPath))
+                            VCRedistPath = tempPath;
+                    }
+                }
+            }
+			OutputString.AppendFormat(".VCBinPath = '{0}'\n", VCBinPath);
+            OutputString.AppendFormat(".VCRedistPath = '{0}'\n", VCRedistPath);
 
 			WindowsSDKTarget = ActiveProject.GetProperty("WindowsTargetPlatformVersion") != null ? ActiveProject.GetProperty("WindowsTargetPlatformVersion").EvaluatedValue : "8.1";
 
-			OutputString.AppendFormat(".WindowsSDKBasePath = '{0}'\n\n", ActiveProject.GetProperty("WindowsSdkDir").EvaluatedValue);
+            string windowsSdkBasePath = ActiveProject.GetProperty("WindowsSdkDir").EvaluatedValue;
+            if (!File.Exists(windowsSdkBasePath + "bin\\x64\\rc.exe"))
+            {
+                string tempPath = windowsSdkBasePath + "bin\\";
+                if (Directory.Exists(tempPath))
+                {
+                    DirectoryInfo tempDir = new DirectoryInfo(tempPath);
+                    var dirs = tempDir.GetDirectories();
+                    foreach (var dir in dirs)
+                    {
+                        if (File.Exists(dir.FullName + "\\x64\\rc.exe"))
+                        {
+                            windowsSdkBasePath = dir.FullName + "\\x64\\";
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                windowsSdkBasePath += "bin\\x64\\";
+            }
+            OutputString.AppendFormat(".WindowsSDKBasePath = '{0}'\n\n", windowsSdkBasePath);
 
 			OutputString.Append("Settings\n{\n\t.Environment = \n\t{\n");
 			OutputString.AppendFormat("\t\t\"INCLUDE={0}\",\n", ActiveProject.GetProperty("IncludePath").EvaluatedValue);
@@ -428,15 +490,15 @@ namespace msfastbuild
 
 			StringBuilder CompilerString = new StringBuilder("Compiler('msvc')\n{\n");
 
-			string CompilerRoot = CompilerRoot = VCBasePath + "bin/";
+			string CompilerRoot = CompilerRoot = VCBinPath;
 			if (Platform == "Win64" || Platform == "x64")
 			{
-				CompilerString.Append("\t.Root = '$VSBasePath$/VC/bin/amd64'\n");
+				CompilerString.Append("\t.Root = '$VCBinPath$amd64'\n");
 				CompilerRoot += "amd64/";
 			}
 			else if (Platform == "Win32" || Platform == "x86" || true) //Hmm.
 			{
-				CompilerString.Append("\t.Root = '$VSBasePath$/VC/bin'\n");
+				CompilerString.Append("\t.Root = '$VCBinPath$'\n");
 			}
 			CompilerString.Append("\t.Executable = '$Root$/cl.exe'\n");
 			CompilerString.Append("\t.ExtraFiles =\n\t{\n");
@@ -460,18 +522,21 @@ namespace msfastbuild
 			
 			CompilerString.Append("\t\t'$Root$/mspdbsrv.exe'\n");
 			CompilerString.Append("\t\t'$Root$/mspdbcore.dll'\n");
-			
-			CompilerString.AppendFormat("\t\t'$Root$/mspft{0}.dll'\n", PlatformToolsetVersion);
-			CompilerString.AppendFormat("\t\t'$Root$/msobj{0}.dll'\n", PlatformToolsetVersion);
-			CompilerString.AppendFormat("\t\t'$Root$/mspdb{0}.dll'\n", PlatformToolsetVersion);
-			CompilerString.AppendFormat("\t\t'$VSBasePath$/VC/redist/{0}/Microsoft.VC{1}.CRT/msvcp{1}.dll'\n", Platform == "Win32" ? "x86" : "x64", PlatformToolsetVersion);
-			CompilerString.AppendFormat("\t\t'$VSBasePath$/VC/redist/{0}/Microsoft.VC{1}.CRT/vccorlib{1}.dll'\n", Platform == "Win32" ? "x86" : "x64", PlatformToolsetVersion);
+
+            string tempToolsetVersion = PlatformToolsetVersion;
+            if (tempToolsetVersion == "141")
+                tempToolsetVersion = "140";
+            CompilerString.AppendFormat("\t\t'$Root$/mspft{0}.dll'\n", tempToolsetVersion);
+			CompilerString.AppendFormat("\t\t'$Root$/msobj{0}.dll'\n", tempToolsetVersion);
+			CompilerString.AppendFormat("\t\t'$Root$/mspdb{0}.dll'\n", tempToolsetVersion);
+			CompilerString.AppendFormat("\t\t'$VCRedistPath$msvcp{0}.dll'\n", tempToolsetVersion);
+			CompilerString.AppendFormat("\t\t'$VCRedistPath$vccorlib{0}.dll'\n", tempToolsetVersion);
 			
 			CompilerString.Append("\t}\n"); //End extra files
 			CompilerString.Append("}\n\n"); //End compiler
 
 			CompilerString.Append("Compiler('rc')\n{\n");
-			CompilerString.Append("\t.Executable = '$WindowsSDKBasePath$\\bin\\x64\\rc.exe'\n");
+			CompilerString.Append("\t.Executable = '$WindowsSDKBasePath$rc.exe'\n");
 			CompilerString.Append("\t.CompilerFamily = 'custom'\n");
 			CompilerString.Append("}\n\n"); //End rc compiler
 
@@ -485,7 +550,12 @@ namespace msfastbuild
 					var mdPi = buildEvent.Metadata.First();
 					if(!string.IsNullOrEmpty(mdPi.EvaluatedValue))
 					{
-						string BatchText = "call \"" + VCBasePath + "vcvarsall.bat\" " + 
+                        string vcvarsall = "vcvarsall.bat\" ";
+                        if (!File.Exists(VCBasePath + "vcvarsall.bat"))
+                        {
+                            vcvarsall = "Auxiliary\\Build\\vcvarsall.bat\" ";
+                        }
+						string BatchText = "call \"" + VCBasePath + vcvarsall + 
 							(Platform == "Win32" ? "x86" : "x64") + " "
 							+ (PlatformToolsetVersion == "140" ? WindowsSDKTarget : "") + "\n";
 						PreBuildBatchFile = Path.Combine(ActiveProject.DirectoryPath, Path.GetFileNameWithoutExtension(ActiveProject.FullPath) + "_prebuild.bat");
@@ -537,8 +607,10 @@ namespace msfastbuild
 					if (Item.DirectMetadata.Where(dmd => dmd.Name == "PrecompiledHeader" && dmd.EvaluatedValue == "NotUsing").Any())
 						ExcludePrecompiledHeader = true;
 				}
-	
-				ToolTask Task = (ToolTask) Activator.CreateInstance(CPPTasksAssembly.GetType("Microsoft.Build.CPPTasks.CL"));
+                if (Item.GetMetadataValue("PrecompiledHeader") == "NotUsing")
+                    ExcludePrecompiledHeader = true;
+
+                ToolTask Task = (ToolTask) Activator.CreateInstance(CPPTasksAssembly.GetType("Microsoft.Build.CPPTasks.CL"));
 				Task.GetType().GetProperty("Sources").SetValue(Task, new TaskItem[] { new TaskItem() }); //CPPTasks throws an exception otherwise...
 				string TempCompilerOptions = GenerateTaskCommandLine(Task, new string[] { "ObjectFileName", "AssemblerListingLocation" }, Item.Metadata) + " /FS";
 				if (Path.GetExtension(Item.EvaluatedInclude) == ".c")
@@ -601,31 +673,48 @@ namespace msfastbuild
 
 				if (Platform == "Win32" || Platform == "x86")
 				{
-					OutputString.Append("\t.Linker = '$VSBasePath$\\VC\\bin\\link.exe'\n");
+					OutputString.Append("\t.Linker = '$VCBinPath$link.exe'\n");
 				}
 				else
 				{
-					OutputString.Append("\t.Linker = '$VSBasePath$\\VC\\bin\\amd64\\link.exe'\n");
+					OutputString.Append("\t.Linker = '$VCBinPath$amd64\\link.exe'\n");
 				}
 		
-				var LinkDefinitions = ActiveProject.ItemDefinitions["Link"];
+                var LinkDefinitions = ActiveProject.ItemDefinitions["Link"];
 				string OutputFile = LinkDefinitions.GetMetadataValue("OutputFile").Replace('\\', '/');
 
-				if(HasCompileActions)
-				{
-					string DependencyOutputPath = LinkDefinitions.GetMetadataValue("ImportLibrary");
-					if (Path.IsPathRooted(DependencyOutputPath))
-						DependencyOutputPath = DependencyOutputPath.Replace('\\', '/');
-					else
-						DependencyOutputPath = Path.Combine(ActiveProject.DirectoryPath, DependencyOutputPath).Replace('\\', '/');
+                // 处理附加的 .obj 文件
+                var AdditionalObjectFiles = ActiveProject.GetItems("Object");
+                if (AdditionalObjectFiles.Count > 0)
+                {
+                    var AdditionalDependencies = LinkDefinitions.GetMetadataValue("AdditionalDependencies");
+                    if (AdditionalDependencies.Length > 0 && AdditionalDependencies[AdditionalDependencies.Length - 1] != ';')
+                    {
+                        AdditionalDependencies += ";";
+                    }
+                    foreach (var Item in AdditionalObjectFiles)
+                    {
+                        AdditionalDependencies += Item.EvaluatedInclude + ";";
+                    }
+                    // 设置的虽然是未计算的值，但是并不会重新计算
+                    LinkDefinitions.SetMetadataValue("AdditionalDependencies", AdditionalDependencies);
+                }
 
-					foreach (var deps in CurrentProject.Dependents)
-					{
-						deps.AdditionalLinkInputs += " \"" + DependencyOutputPath + "\" ";
-					}
-				}
+                if (HasCompileActions)
+                {
+                    string DependencyOutputPath = LinkDefinitions.GetMetadataValue("ImportLibrary");
+                    if (Path.IsPathRooted(DependencyOutputPath))
+                        DependencyOutputPath = DependencyOutputPath.Replace('\\', '/');
+                    else
+                        DependencyOutputPath = Path.Combine(ActiveProject.DirectoryPath, DependencyOutputPath).Replace('\\', '/');
 
-				ToolTask Task = (ToolTask)Activator.CreateInstance(CPPTasksAssembly.GetType("Microsoft.Build.CPPTasks.Link"));
+                    foreach (var deps in CurrentProject.Dependents)
+                    {
+                        deps.AdditionalLinkInputs += " \"" + DependencyOutputPath + "\" ";
+                    }
+                }
+
+                ToolTask Task = (ToolTask)Activator.CreateInstance(CPPTasksAssembly.GetType("Microsoft.Build.CPPTasks.Link"));
 				string LinkerOptions = GenerateTaskCommandLine(Task, new string[] { "OutputFile", "ProfileGuidedDatabase" }, LinkDefinitions.Metadata);
 
 				if (!string.IsNullOrEmpty(CurrentProject.AdditionalLinkInputs))
@@ -650,11 +739,11 @@ namespace msfastbuild
 
 				if (Platform == "Win32" || Platform == "x86")
 				{
-					OutputString.Append("\t.Librarian = '$VSBasePath$\\VC\\bin\\lib.exe'\n");
+					OutputString.Append("\t.Librarian = '$VCBinPath$lib.exe'\n");
 				}
 				else
 				{
-					OutputString.Append("\t.Librarian = '$VSBasePath$\\VC\\bin\\amd64\\lib.exe'\n");
+					OutputString.Append("\t.Librarian = '$VCBinPath$amd64\\lib.exe'\n");
 				}
 
 				var LibDefinitions = ActiveProject.ItemDefinitions["Lib"];
@@ -698,7 +787,12 @@ namespace msfastbuild
 					ProjectMetadata MetaData = BuildEvent.Metadata.First();
 					if(!string.IsNullOrEmpty(MetaData.EvaluatedValue))
 					{
-						string BatchText = "call \"" + VCBasePath + "vcvarsall.bat\" " +
+                        string vcvarsall = "vcvarsall.bat\" ";
+                        if (!File.Exists(VCBasePath + "vcvarsall.bat"))
+                        {
+                            vcvarsall = "Auxiliary\\Build\\vcvarsall.bat\" ";
+                        }
+                        string BatchText = "call \"" + VCBasePath + vcvarsall +
 							   (Platform == "Win32" ? "x86" : "x64") + " "
 							   + (PlatformToolsetVersion == "140" ? WindowsSDKTarget : "") + "\n";
 						PostBuildBatchFile = Path.Combine(ActiveProject.DirectoryPath, Path.GetFileNameWithoutExtension(ActiveProject.FullPath) + "_postbuild.bat");
